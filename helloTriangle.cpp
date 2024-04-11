@@ -26,7 +26,7 @@ const unsigned int SCR_HEIGHT = 600;
 
 float x_position;
 float y_position;
-float z_position = -10;
+float z_position = -20;
 
 float x_rotation;
 float y_rotation;
@@ -100,15 +100,14 @@ int main(int argc, char *argv[])
     glEnable(GL_DEPTH_TEST);
 
     // Choose shader    
-    std::string vertexShader = "shader_1";
-    std::string fragmentShader = "shader_1";
+    std::string vertexShader = "shader";
+    std::string fragmentShader = "shader";
 
     auto vertex = ("../data/shaders/" + vertexShader + ".vs");
     auto frag = ("../data/shaders/" + fragmentShader + ".fs");
     ShaderReader shaderReader(vertex.c_str(), frag.c_str());
     ShaderData shaderData;
     shaderReader.read(shaderData);
-    shaderData.print();
     if(shaderReader.wasError()){
         std::cout << "Failed to read shader data. \n";
         return -1;
@@ -127,9 +126,7 @@ int main(int argc, char *argv[])
     unsigned int numVertices = 0;
     objReader.readObjAsIndexed(targetModel, objData, true);
     
-    // Scale all verts. Done before vertices are potentially duplicated
-    // BUG ? LIGHTING NOT WORKING WITH THIS: FIX ME !! 
-    // objReader.scaleToClipCoords(objData);
+ 
 
     // .obj files are indexed triangle structures. Need to convert to separate triangles. 
     ObjData currentObjData;
