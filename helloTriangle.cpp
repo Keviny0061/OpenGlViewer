@@ -9,13 +9,16 @@
 #include <string>
 #include <chrono>
 #include <glm/gtc/matrix_transform.hpp>
-#include "entry.h"
 #include "ShaderReader.h"
 #include "ShaderProgram.h"
 #include "ObjReader.h"
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+void set_vec3_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, glm::vec3 const& v);
+void set_boolean_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, bool v);
+void set_float_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, float v);
 
 // settings
 const unsigned int SCR_WIDTH = 800;
@@ -23,7 +26,7 @@ const unsigned int SCR_HEIGHT = 600;
 
 float x_position;
 float y_position;
-float z_position;
+float z_position = -10;
 
 float x_rotation;
 float y_rotation;
@@ -32,15 +35,40 @@ float z_rotation;
 float x_scale = 1;
 float y_scale = 1;
 float z_scale = 1;
+// For perspective projection
+float fovy = 45.0;
+float near_plane = 0.1;
+float far_plane = 1000.0f;
+
+bool showZBuffer = false;
+bool useGouraudShading = false;
+bool usePhongShading = false;
+bool useFlatShading = false;
+
+void reset_variables() {
+    x_position = 0.0;
+    y_position = 0.0;
+    z_position = -5.0;
+    x_rotation = 0.0;
+    y_rotation = 0.0;
+    z_rotation = 0.0;
+    x_scale = 1;
+    y_scale = 1;
+    z_scale = 1;
+    fovy = 45.0;
+    near_plane = 0.1;
+    far_plane = 1000.0f;
+}
 
 int main(int argc, char *argv[])
 {
     // Load in program arguments as variables
-    std::string targetModel = argc > 1 ? argv[1] : "cube"; // Model in 
-    std::string targetProcessor = argc > 2 ? argv[2] : "GPU"; // GPU or CPU
-    std::string targetDataStructure = argc > 3 ? argv[3] : "Separate"; // Separate or Indexed
+    std::string input;
+    std::cout << "Enter the object you want to read: ";
 
-    std::cout << targetProcessor;
+    // Take input as a string
+    std::getline(std::cin, input);
+    std::string targetModel = input; // choose shape/model
 
     // glfw: initialize and configure
     // ------------------------------
@@ -64,6 +92,7 @@ int main(int argc, char *argv[])
     }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetKeyCallback(window, key_callback);
 
     // // glew: load all OpenGL function pointers
     glewInit();
@@ -73,13 +102,10 @@ int main(int argc, char *argv[])
     // Choose shader    
     std::string vertexShader = "shader_1";
     std::string fragmentShader = "shader_1";
-    if(targetProcessor.compare("CPU") == 0){
-        // Read shader that doesn't transform vertices. 
-        vertexShader = "shader_2";
-    }
 
-    //choose and read the shader
-    ShaderReader shaderReader(("../data/shaders/" + vertexShader + ".vs").c_str(), ("../data/shaders/" + fragmentShader + ".fs").c_str());
+    auto vertex = ("../data/shaders/" + vertexShader + ".vs");
+    auto frag = ("../data/shaders/" + fragmentShader + ".fs");
+    ShaderReader shaderReader(vertex.c_str(), frag.c_str());
     ShaderData shaderData;
     shaderReader.read(shaderData);
     shaderData.print();
@@ -102,24 +128,17 @@ int main(int argc, char *argv[])
     objReader.readObjAsIndexed(targetModel, objData, true);
     
     // Scale all verts. Done before vertices are potentially duplicated
-    objReader.scaleToClipCoords(objData);
+    // BUG ? LIGHTING NOT WORKING WITH THIS: FIX ME !! 
+    // objReader.scaleToClipCoords(objData);
 
     // .obj files are indexed triangle structures. Need to convert to separate triangles. 
     ObjData currentObjData;
-    if(targetDataStructure.compare("Indexed") == 0){
-        currentObjData = objData;
-        numVertices = currentObjData.vertexIndices.size();
-    } else if(targetDataStructure.compare("Separate") == 0){
+   
         // Resolve into currentObj, then count actual number of vertices used. Put here for flexibility
-        objReader.indexedToSeparateTriangles(objData, currentObjData);
+     objReader.indexedToSeparateTriangles(objData, currentObjData);
         numVertices = currentObjData.vertices.size();
-    } 
     
-    // Funny story, vertex and normals are not 1:1!
-    // Why? Because normals apparently map to triangles 
-    // Solution: map to separate, then unmap: https://gamedev.stackexchange.com/questions/146853/using-indices-in-obj-files-and-handling-normals
-    std::cout << "\n Vertex count: " << objData.vertices.size();
-    std::cout << "\n Normal count: " << objData.normals.size() << "\n";
+    
 
     unsigned int VAO;
     unsigned int VBO_Verts, VBO_Color; // VAO will contain 2 buffers, use data from both. 
@@ -148,12 +167,6 @@ int main(int argc, char *argv[])
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
 
-    // EBO moves all pointers, vert, color, etc. : https://stackoverflow.com/questions/74791262/opengl-triangles-with-element-buffer-object-ebo-aka-gl-element-array-buffer
-    if(targetDataStructure.compare("Indexed") == 0){
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, currentObjData.vertexIndices.size() * sizeof(unsigned int), &currentObjData.vertexIndices[0], GL_STATIC_DRAW);
-    }
-
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
     glBindBuffer(GL_ARRAY_BUFFER, 0); 
 
@@ -174,9 +187,7 @@ int main(int argc, char *argv[])
 
     // render loop
     // -----------
-    //delcare below right before loop
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-    glm::mat4 view = glm::mat4(1.0f); // This line is repeated and only needs to be declared once outside the loop.
+    std::cout << "Starting render loop \n";
     while (!glfwWindowShouldClose(window))
     {
         frames++;
@@ -184,31 +195,15 @@ int main(int argc, char *argv[])
         // -----
         processInput(window);
 
-        
-        
         // render
         // ------
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        //4/8/2024
-        // Perspective Projection parameters
-        glm::mat4 model = glm::mat4(1.0f); // Reset model matrix for each frame
-        float fov = 45.0f; // Field of View
-        float aspectRatio = (float)SCR_WIDTH / (float)SCR_HEIGHT; // Aspect Ratio
-        float nearPlane = 0.1f; // Near Clipping Plane
-        float farPlane = 100.0f; // Far Clipping Plane
 
-        // Perspective projection matrix
         // Create model transform. May update every frame, so need to set each frame. 
         // ------
-        glm::mat4 modelMatrix(1.0f);      
-        //added 4.8.2024
-        glm::mat4 projection = glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
-        glm::mat4 view = glm::mat4(1.0f); // Placeholder for actual view matrix setup
-        
-
-
+        glm::mat4 modelMatrix(1.0f);        
         float x_rotate = x_rotation * 3.142 / 180;
         float y_rotate = y_rotation * 3.142 / 180;
         float z_rotate = z_rotation * 3.142 / 180;
@@ -218,63 +213,92 @@ int main(int argc, char *argv[])
             * glm::rotate(modelMatrix, y_rotate, glm::vec3(0.f, 1.f, 0.f)) 
             * glm::rotate(modelMatrix, z_rotate, glm::vec3(0.f, 0.f, 1.f))
             * glm::scale(modelMatrix, glm::vec3(x_scale, y_scale, z_scale));
+                
+        // View Matrix
+        glm::mat4 viewMatrix(1.0f);
+        glm::vec3 viewerPosition = glm::vec3(0.0);
+        glm::vec3 viewerCenter = glm::vec3(0.0, 0.0, -1.0);
+        glm::vec3 viewerUp = glm::vec3(0.0, 1.0, 0.0);
+        viewMatrix = glm::lookAt(viewerPosition, viewerCenter, viewerUp);
+
+        // Perspective Projection Matrix
+        glm::mat4 perspectiveMatrix;
+        float fov_r = glm::radians(fovy);
+        float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;
+        float zNear = near_plane;
+        float zFar = far_plane;
+        perspectiveMatrix = glm::perspective(fov_r, aspect_ratio, zNear, zFar);
+        
+        // Normal Matrix for lighting calculation
+        glm::mat3 normalMatrix;
+        normalMatrix = glm::mat3(glm::transpose(glm::inverse(modelMatrix)));
 
         start = std::chrono::high_resolution_clock::now();
 
-        
-        
-
         // Use model transform. Comparing strings is a fraction of time. 
         // ------
-        if(targetProcessor.compare("GPU") == 0){
+        
             // Set uniform variable in GPU's existing shader program.
-            int modelPosition = glGetUniformLocation(shaderProgram.getID(), "modelView");
+            int modelPosition = glGetUniformLocation(shaderProgram.getID(), "model");
             glUniformMatrix4fv(modelPosition, 1, GL_FALSE, &modelMatrix[0][0]);
-        } else if(targetProcessor.compare("CPU") == 0){
-            // Update each point with CPU. 
-            // Note: Must create copy, otherwise transform 'accumulates'. Either create, or iterate again with inverse transform.
-            std::vector<glm::vec3> copiedVertices = currentObjData.vertices;
-            for(unsigned int i = 0; i < copiedVertices.size(); i++){
-                glm::vec4 result = modelMatrix * glm::vec4(copiedVertices[i], 1);
-                copiedVertices[i] = glm::vec3(result.x, result.y, result.z);
-            }
 
-            // Load all vertice data into existing buffer 
-            glNamedBufferSubData(VBO_Verts, 0, copiedVertices.size() * sizeof(glm::vec3), &copiedVertices[0]);
-        } else{
-            std::cout << "\n Invalid processor. Choose \"GPU\" or \"CPU\" as second program parameter \n";
-            break;
+            // Set view matrix
+            int viewPosition = glGetUniformLocation(shaderProgram.getID(), "view");
+            glUniformMatrix4fv(viewPosition, 1, GL_FALSE, &viewMatrix[0][0]);
+
+            // Set uniform variable for projection matrix in GPU's shader program
+            int projectionPosition = glGetUniformLocation(shaderProgram.getID(), "projection");
+            glUniformMatrix4fv(projectionPosition, 1, GL_FALSE, &perspectiveMatrix[0][0]);
+
+            // Normal Matrix for Gouraud and Phong shading
+            int normalMatrixPosition = glGetUniformLocation(shaderProgram.getID(), "normalMatrix");
+            glUniformMatrix3fv(normalMatrixPosition, 1, GL_FALSE, &normalMatrix[0][0]);
+
+        
+
+
+        int showZBufferPosition = glGetUniformLocation(shaderProgram.getID(), "showZBuffer");
+        if (showZBufferPosition == -1) {
+            char infoLog[1024];
+            glGetProgramInfoLog(shaderProgram.getID(), 512, NULL, infoLog);
+            std::cerr << infoLog << std::endl;
+            std::cerr << "Error: Cannot find the uniform variable showZBuffer" << std::endl;
+            exit(1);
+        }
+        if (showZBuffer) {
+            glUniform1i(showZBufferPosition, 1);
+        }
+        else {
+            glUniform1i(showZBufferPosition, 0);
+        }
+
+        // Lighting Calculations
+        {
+           glm::vec3 lightPosition = glm::vec3(0.0, 3.0, -3.0);
+           glm::vec3 lightColor = glm::vec3(1.0);
+           glm::vec3 objectColor = glm::vec3(1.0, 0.0, 0.0); // RED COLOR
+           float shininess = 32;
+           set_vec3_uniform(shaderProgram, "lightPosition", lightPosition);
+           set_vec3_uniform(shaderProgram, "viewerPosition", viewerPosition);
+           set_vec3_uniform(shaderProgram, "lightColor", lightColor);
+           set_vec3_uniform(shaderProgram, "objectColor", objectColor);
+           set_boolean_uniform(shaderProgram, "useGouraudShading", useGouraudShading);
+           set_boolean_uniform(shaderProgram, "usePhongShading", usePhongShading);
+           set_boolean_uniform(shaderProgram, "useFlatShading", useFlatShading);
+           set_float_uniform(shaderProgram, "shininess", shininess);
         }
 
         // Draw using GPU buffer data
         // ------
         shaderProgram.use();
         glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-
-        //shaderprogramSetMat4 not defined
-        shaderProgram.setMat4("projection", projection);
-        shaderProgram.setMat4("view", view);
-        shaderProgram.setMat4("model", model);
-
-        if(targetDataStructure.compare("Separate") == 0){
-            glDrawArrays(GL_TRIANGLES, 0, numVertices);
-        } else if(targetDataStructure.compare("Indexed") == 0){
-            glDrawElements(GL_TRIANGLES, numVertices, GL_UNSIGNED_INT, 0);
-        } else {
-            std::cout << "\n Invalid data structure. Choose \"Separate\" or \"Indexed\" as third program parameter \n";
-        }
- 
+        glDrawArrays(GL_TRIANGLES, 0, numVertices);
+         
         end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsedSeconds = end - start;
         totalDuration += elapsedSeconds.count();
 
-        // Every 3 seconds, print out avg draw time = sum(duration of frame/single frame). 
-        //if(totalDuration - lastPrintDuration > 1.){
-        std::cout << "[" << targetModel << ", "<< targetProcessor << ", " << targetDataStructure << ", v: " << numVertices << "] " 
-                << " Average frame draw time: " << totalDuration / frames << "\n";
-        //    lastPrintDuration = totalDuration;
-        //}
-
+       
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------
         // Swap buffers should just move pointers, doesn't scale based on number of items.
@@ -326,6 +350,13 @@ void updateDeltaFromInput(GLFWwindow* window, float& x, float& y, float& z, floa
         z -= delta;
 }
 
+void updateIfReset(GLFWwindow* window, int reset_glfw_key)
+{
+    if (glfwGetKey(window, reset_glfw_key) == GLFW_PRESS) {
+        reset_variables();
+    }
+}
+
 // process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
 void processInput(GLFWwindow *window)
@@ -333,9 +364,11 @@ void processInput(GLFWwindow *window)
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    float positionDelta = 0.0001f;
-    float rotationDelta = 0.01f;
-    float scaleDelta = 0.0001f;
+    float positionDelta = 0.1f;
+    float rotationDelta = 0.5f;
+    float scaleDelta = 0.1f;
+
+    float projectionDelta = 0.1f;
 
     const ButtonBinds positionKeys(
         GLFW_KEY_RIGHT, GLFW_KEY_LEFT,
@@ -358,9 +391,22 @@ void processInput(GLFWwindow *window)
         GLFW_KEY_Y, GLFW_KEY_H
     };
 
+    // Perspective Projection
+    const ButtonBinds perspectiveKeys {
+        GLFW_KEY_5, GLFW_KEY_6,
+        GLFW_KEY_7, GLFW_KEY_8,
+        GLFW_KEY_9, GLFW_KEY_0,
+        GLFW_KEY_UNKNOWN, GLFW_KEY_UNKNOWN   // SKIP ALL INC/DEC
+    };
+
     updateDeltaFromInput(window, x_position, y_position, z_position, positionDelta, positionKeys);
     updateDeltaFromInput(window, x_rotation, y_rotation, z_rotation, rotationDelta, rotationKeys);
     updateDeltaFromInput(window, x_scale, y_scale, z_scale, scaleDelta, scaleKeys);
+    updateDeltaFromInput(window, fovy, near_plane, far_plane, projectionDelta, perspectiveKeys);
+
+    // Reset values to default
+    updateIfReset(window, GLFW_KEY_SPACE);
+
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
@@ -370,4 +416,53 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and 
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
+}
+
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    if (key == GLFW_KEY_Z && action == GLFW_PRESS) {
+        showZBuffer = !showZBuffer;
+    }
+    else if (key == GLFW_KEY_G && action == GLFW_PRESS) {
+        useGouraudShading = !useGouraudShading;
+        usePhongShading = false;
+        useFlatShading = false;
+    }
+    else if (key == GLFW_KEY_P && action == GLFW_PRESS) {
+        usePhongShading = !usePhongShading;
+        useGouraudShading = false;
+        useFlatShading = false;
+    }
+    else if (key == GLFW_KEY_T && action == GLFW_PRESS) {
+        useFlatShading = !useFlatShading;
+        useGouraudShading = false;
+        usePhongShading = false;
+    }
+}
+
+void set_vec3_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, glm::vec3 const& v) {
+    int position = glGetUniformLocation(shaderProgram.getID(), uniform_name.c_str());
+    if (position == -1) {
+        std::cerr << "Error: Cannot find uniform variable: " << uniform_name << std::endl;
+        exit(1);
+    }
+    glUniform3fv(position, 1, &v[0]);
+}
+
+void set_boolean_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, bool v) {
+    int position = glGetUniformLocation(shaderProgram.getID(), uniform_name.c_str());
+    if (position == -1) {
+        std::cerr << "Error: Cannot find uniform variable: " << uniform_name << std::endl;
+        exit(1);
+    }
+    glUniform1i(position, (int)v);
+}
+
+void set_float_uniform(ShaderProgram &shaderProgram, std::string const& uniform_name, float v) {
+    int position = glGetUniformLocation(shaderProgram.getID(), uniform_name.c_str());
+    if (position == -1) {
+        std::cerr << "Error: Cannot find uniform variable: " << uniform_name << std::endl;
+        exit(1);
+    }
+    glUniform1f(position, v);
 }
